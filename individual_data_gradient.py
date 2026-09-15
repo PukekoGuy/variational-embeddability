@@ -122,12 +122,12 @@ def run_experiments(gen, times, num_intervals, num_individuals_range, max_iter=5
     return gen_paths, true_A
 
 
-times = np.linspace(0.0, 1.0, 21)
-gen = trig_generator(1.0)
-np.random.seed(1008)
-long_range = range(100, 10001, 100)
-medium_range = range(500,5001,500)
-test_range = range(500, 1501, 500)
-gen_paths, true_A = run_experiments(gen, times, 100, test_range, max_iter=500)
-plot_2D_generator_path(gen_paths, true_A, test_range, times, plot_frequency=1)
+# times = np.linspace(0.0, 1.0, 21)
+# gen = trig_generator(1.0)
+# np.random.seed(1008)
+# long_range = range(100, 10001, 100)
+# medium_range = range(500,5001,500)
+# test_range = range(500, 1501, 500)
+# gen_paths, true_A = run_experiments(gen, times, 100, test_range, max_iter=500)
+# plot_2D_generator_path(gen_paths, true_A, test_range, times, plot_frequency=1)
 

@@ -30,11 +30,6 @@ class Embedder:
         U = 0.0
         rate_gradient = np.zeros_like(theta)
 
-        # --------------------------------------------------
-        # DATA LIKELIHOOD + ADJOINT, ONE OBSERVATION
-        # INTERVAL AT A TIME
-        # --------------------------------------------------
-
         for r in range(len(obs_times) - 1):
 
             a = obs_times[r]
@@ -84,10 +79,6 @@ class Embedder:
                 # Lambda_k = Lambda_{k+1} E_k^T
                 Lam = Lam @ E[k].T
 
-        # --------------------------------------------------
-        # SMOOTHNESS PENALTY
-        # --------------------------------------------------
-
         differences = theta[1:] - theta[:-1]
 
         U += (
@@ -129,63 +120,96 @@ class Embedder:
     def times_to_intervals(self, times):
         return [int(round(t * self.num_intervals)) for t in times]
 
-# def run_experiments(gen, times, num_intervals, num_individuals_range, max_iter=500, show_plot=False):
-#     gen_paths = []
+# def run_experiments(gen, times, num_intervals, num_individuals_range, max_iter=500, show_plot = False):
+#     from experiment import Observation
+
+#     true_A = np.stack(
+#         [generator(t/num_intervals) for t in range(num_intervals+1)]
+#     )
+
+#     estimated = []
 #     embedder = Embedder(2, num_intervals, mu=1e-2, kappa=1.0, max_iter=max_iter)
 #     MISE = []
 #     generator = trig_generator(1.0)
-#     true_A = np.stack([generator(t/num_intervals) for t in range(num_intervals+1)])
+    
 #     for num_individuals in num_individuals_range:
-#         obs = Observation(gen, 2, times, num_intervals)
-#         paths = obs.simulate(num_individuals)
+#         obs = Observation(gen, 2, times=times, num_intervals=num_intervals)
+#         paths = obs.simulate_fixed_observations(num_individuals)
 #         A = embedder.optimise_A(times, paths)
-#         gen_paths.append(A)
-#         # print(A)
+#         estimated.append(A)
 
 #         # MISE between true and estimated A matrices
 #         MISE.append(np.sum((true_A - A) ** 2) / len(A))
-#         print(MISE[-1])
 
 #     if show_plot:
-#         plt.plot(num_individuals_range, MISE)
-#         plt.ylabel("Mean integrated square error")
-#         plt.xlabel("Number of individuals sampled")
-#         plt.title("MISE of the estimated generator path vs number of individuals")
-#         plt.grid(True)
-#         plt.show()
+#         plot_MISE(num_individuals_range, MISE)
 
-#     return gen_paths, true_A
+#     return estimated, true_A
 
-def run_experiments(gen, times, num_intervals, num_individuals_range, max_iter=500, show_plot = False):
-    gen_paths = []
-    embedder = Embedder(2, num_intervals, mu=1e-2, kappa=1.0, max_iter=max_iter)
-    MISE = []
-    generator = trig_generator(1.0)
-    true_A = np.stack([generator(t/num_intervals) for t in range(num_intervals+1)])
+def run_experiments(
+    generator,
+    rank,
+    target_num_jumps,
+    num_observations,
+    num_intervals,
+    num_individuals_range,
+    mu=1e-2,
+    kappa=1.0,
+    max_iter=500,
+):
+    """Simulate and fit the model for several panel sizes.
+
+    Returns ``(estimated_paths, true_path, mise_values)``. Unlike the old
+    two-state helper, this works for every rank and includes every level's
+    distinct birth and death rates in the MISE.
+    """
+    print(num_individuals_range)
+
+    from experiment import Observation
+
+    estimated_paths = []
+    mise_values = []
+    embedder = Embedder(
+        rank,
+        num_intervals=num_intervals,
+        mu=mu,
+        kappa=kappa,
+        max_iter=max_iter,
+    )
+
+    times = np.linspace(0.0, 1.0, num_observations)
+    observations = Observation(generator, rank, times, num_intervals)
+    observations.tune_generator_for_target_jumps(
+        lambda A: trig_generator(A=A), target_num_jumps
+    )
+    generator = observations.generator
+
+    true_A = np.stack(
+        [generator(k / num_intervals) for k in range(num_intervals + 1)]
+    )
+
     for num_individuals in num_individuals_range:
-        obs = Observation(gen, 2, times=times, num_intervals=num_intervals)
-        paths = obs.simulate_fixed_observations(num_individuals)
-        A = embedder.optimise_A(times, paths)
-        gen_paths.append(A)
+        print(int(num_individuals))
+        paths = observations.simulate_fixed_observations(int(num_individuals))
+        estimated_A = embedder.optimise_A(times, paths)
+        estimated_paths.append(estimated_A)
+        mise_values.append(np.mean((true_A - estimated_A) ** 2))
 
-        # MISE between true and estimated A matrices
-        MISE.append(np.sum((true_A - A) ** 2) / len(A))
-        print(MISE[-1])
+    return estimated_paths, true_A, np.asarray(mise_values)
 
-    if show_plot:
-        plot_MISE(num_individuals_range, MISE)
+# gen = trig_generator()
+# np.random.seed(1008)
+# long_range = range(100, 10001, 100)
+# medium_range = np.linspace(500,5000,10)
+# test_range = range(500, 1501, 500)
+# gen_paths, true_A, mise = run_experiments(gen, 2, num_jumps=1, num_observations=20, num_intervals=100, num_individuals_range=medium_range, max_iter=500)
+# plot_2D_generator_path(gen_paths, true_A, medium_range, plot_frequency=1)
 
-    return gen_paths, true_A
-
-times = np.linspace(0.0, 1.0, 21)
-gen = trig_generator(1.0)
-np.random.seed(1008)
-long_range = range(100, 10001, 100)
-medium_range = range(500,5001,500)
-test_range = range(500, 1501, 500)
-gen_paths, true_A = run_experiments(gen, times, 100, test_range, max_iter=500)
-plot_2D_generator_path(gen_paths, true_A, test_range, times, plot_frequency=1)
-
-
-
-
+# times = [0.,1.]
+# paths = np.array([
+#     [0,0,1,1],
+#     [1,0,1,0]
+# ])
+# embedder = Embedder(2, 100, mu=1e-2, kappa=1.0, max_iter=500)
+# A = embedder.optimise_A(times, paths)
+# plot_2D_generator_path([A], A, [0], times, plot_frequency=1)

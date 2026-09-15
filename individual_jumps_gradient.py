@@ -102,35 +102,86 @@ class Embedder:
 
         return U, rate_gradient.ravel()
 
+def run_experiments(
+    generator,
+    rank,
+    target_num_jumps,
+    num_intervals,
+    num_individuals_range,
+    mu=1e-2,
+    kappa=1.0,
+    max_iter=500,
+):
+    """Simulate and fit the model for several panel sizes.
 
-def run_experiments(gen, num_intervals, num_individuals_range, max_iter=500, show_plot=False):
-    gen_paths = []
-    embedder = Embedder(2, num_intervals, mu=1e-2, kappa=1.0, max_iter=max_iter)
-    MISE = []
+    Returns ``(estimated_paths, true_path, mise_values)``. Unlike the old
+    two-state helper, this works for every rank and includes every level's
+    distinct birth and death rates in the MISE.
+    """
+    from experiment import Observation
 
-    # FIX: compare with the generator that was actually supplied.
-    true_A = np.stack([gen(t / num_intervals) for t in range(num_intervals + 1)])
+    estimated_paths = []
+    mise_values = []
+    embedder = Embedder(
+        rank,
+        num_intervals=num_intervals,
+        mu=mu,
+        kappa=kappa,
+        max_iter=max_iter,
+    )
+
+    print(num_individuals_range)
+
+    observations = Observation(generator, rank, times =None, num_intervals=num_intervals)
+    observations.tune_generator_for_target_jumps(
+        lambda A: trig_generator(A=A), target_num_jumps
+    )
+    generator = observations.generator
+
+    true_A = np.stack(
+        [generator(k / num_intervals) for k in range(num_intervals + 1)]
+    )
 
     for num_individuals in num_individuals_range:
-        # FIX: num_intervals must be passed by keyword because the third
-        # positional parameter of Observation is `times`.
-        obs = Observation(gen, 2, num_intervals=num_intervals)
-        jump_times, states = obs.simulate_individual_jump_times_observations(num_individuals)
-        A = embedder.optimise_A(jump_times, states)
-        gen_paths.append(A)
+        print(int(num_individuals))
+        jump_times, states = observations.simulate_individual_jump_times_observations(int(num_individuals))
+        estimated_A = embedder.optimise_A(jump_times, states)
+        estimated_paths.append(estimated_A)
+        mise_values.append(np.mean((true_A - estimated_A) ** 2))
 
-        MISE.append(np.sum((true_A - A) ** 2) / len(A))
-        print(MISE[-1])
-
-    if show_plot:
-        plot_MISE(num_individuals_range, MISE)
-
-    return gen_paths, true_A
+    return estimated_paths, true_A, np.asarray(mise_values)
 
 
-gen = trig_generator(1.0)
-np.random.seed(1008)
-test_range = range(1500, 2501, 500)
-long_range = range(100, 10001, 100)
-gen_paths, true_A = run_experiments(gen, 100, long_range, max_iter=500, show_plot=True)
-plot_2D_generator_path(gen_paths, true_A, long_range, plot_frequency=1)
+# def run_experiments(gen, num_intervals, num_individuals_range, max_iter=500, show_plot=False):
+#     gen_paths = []
+#     embedder = Embedder(2, num_intervals, mu=1e-2, kappa=1.0, max_iter=max_iter)
+#     MISE = []
+
+#     obs = Observation(gen, 2, num_intervals=num_intervals)
+
+#     # FIX: compare with the generator that was actually supplied.
+#     true_A = np.stack([gen(t / num_intervals) for t in range(num_intervals + 1)])
+
+#     for num_individuals in num_individuals_range:
+#         # FIX: num_intervals must be passed by keyword because the third
+#         # positional parameter of Observation is `times`.
+#         obs = Observation(gen, 2, num_intervals=num_intervals)
+#         jump_times, states = obs.simulate_individual_jump_times_observations(num_individuals)
+#         A = embedder.optimise_A(jump_times, states)
+#         gen_paths.append(A)
+
+#         MISE.append(np.sum((true_A - A) ** 2) / len(A))
+
+#     if show_plot:
+#         plot_MISE(num_individuals_range, MISE)
+
+#     return gen_paths, true_A
+
+
+# gen = trig_generator()
+# np.random.seed(1008)
+# test_range = range(1500, 2501, 500)
+# medium_range = np.linspace(500,5000,10)
+# long_range = range(100, 10001, 100)
+# gen_paths, true_A, mise = run_experiments(gen, rank=2, target_num_jumps=8, num_intervals=100, num_individuals_range=medium_range, max_iter=500)
+# plot_2D_generator_path(gen_paths, true_A, medium_range, plot_frequency=1)
