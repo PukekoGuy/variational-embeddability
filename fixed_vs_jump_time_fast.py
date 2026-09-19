@@ -1,8 +1,8 @@
 """Fixed versus jump-time experiments with batched simulation.
 
-Run: python fixed_vs_jump_time_fast.py
-Quick run: python fixed_vs_jump_time_fast.py --individuals 100 1000 --max-iter 20
-Plot saved data: python fixed_vs_jump_time_fast.py --plot-only
+Run: python -m slow.fixed_vs_jump_time_fast
+Quick run: python -m slow.fixed_vs_jump_time_fast --individuals 100 1000 --max-iter 20
+Plot saved data: python -m slow.fixed_vs_jump_time_fast --plot-only
 
 The Euler transition model and fitting implementations are unchanged. Random
 draws are batched, so a seed does not reproduce the original script's samples.
@@ -17,15 +17,16 @@ from time import perf_counter
 import matplotlib.pyplot as plt
 import numpy as np
 
+from cosmetics import LABEL_FONT_SIZE, LEGEND_FONT_SIZE, TICK_LABEL_FONT_SIZE, TITLE_FONT_SIZE
 from experiment import Observation, trig_generator
 from individual_data_adjoint import Embedder as Fixed_Embedder
 from individual_jumps_gradient import Embedder as Jump_Embedder
 
-DEFAULT_RESULTS_FILE = Path(__file__).with_name("fixed_vs_jump_time_fast_results.csv")
+DEFAULT_RESULTS_FILE = Path(__file__).parent / "results" / "fixed_vs_jump_time_fast_results.csv"
 FIELDS = (
     "num_individuals", "fixed_mise", "jump_mise",
     "fixed_execution_seconds", "jump_execution_seconds",
-    "fixed_simulation_seconds", "jump_simulation_seconds", "iteration_seconds",
+    "fixed_simulation_seconds", "jump_simulation_seconds", "iteration_seconds", "num_trials",
 )
 
 
@@ -118,16 +119,23 @@ class BatchedObservation:
 
 def run_experiments(
     generator, rank, fixed_times, num_intervals, num_individuals_list,
-    results_file=DEFAULT_RESULTS_FILE, mu=1e-2, kappa=1.0, max_iter=500,
-    seed=None, batch_size=10000,
+    results_file=DEFAULT_RESULTS_FILE, mu=1e-4, kappa=1, max_iter=500,
+    seed=None, batch_size=10000, num_trials=5,
 ):
-    """Fit the existing embedders; save each completed iteration's timings.
+    """Fit num_trials independent panels per size and save mean metrics.
+
+    MISE is averaged over trial errors, not computed from the mean estimate.
+    Returned path lists contain one mean estimated path per sample size.
+    All CSV timing columns are per-trial means; num_trials records the count.
 
     Execution columns retain their original meaning: optimise_A only (including
     its data preparation). Iteration time includes simulation, fitting and MISE,
     but excludes CSV writing and printing. Shared setup is reported separately.
     The returned seven-tuple matches the original run_experiments function.
     """
+    if (isinstance(num_trials, (bool, np.bool_))
+            or not isinstance(num_trials, (int, np.integer)) or num_trials < 1):
+        raise ValueError("num_trials must be a positive integer")
     sizes = np.asarray(list(num_individuals_list), dtype=int)
     if sizes.ndim != 1 or sizes.size == 0 or np.any(sizes < 1):
         raise ValueError("num_individuals_list must contain positive sample sizes")
@@ -146,48 +154,60 @@ def run_experiments(
         writer = csv.DictWriter(output, fieldnames=FIELDS)
         writer.writeheader()
         for n in sizes:
-            print(f"n={n}: simulating and fitting...", flush=True)
-            iteration_start = perf_counter()
-            start = perf_counter()
-            fixed_data = observations.simulate_fixed_observations(n)
-            fixed_simulation = perf_counter() - start
-            start = perf_counter()
-            jump_times, jump_states = observations.simulate_individual_jump_times_observations(
-                n, batch_size=batch_size,
-            )
-            jump_simulation = perf_counter() - start
-            start = perf_counter()
-            fixed_A = fixed_emb.optimise_A(fixed_times, fixed_data)
-            fixed_fit = perf_counter() - start
-            start = perf_counter()
-            jump_A = jump_emb.optimise_A(jump_times, jump_states)
-            jump_fit = perf_counter() - start
-            fixed_paths.append(fixed_A)
-            jump_paths.append(jump_A)
-            row = dict(zip(FIELDS[:-1], (
-                int(n), np.mean((true_A - fixed_A)**2), np.mean((true_A - jump_A)**2),
-                fixed_fit, jump_fit, fixed_simulation, jump_simulation,
-            )))
-            # Free the old panel before allocating the next, larger one.
-            del fixed_data, jump_times, jump_states
-            row["iteration_seconds"] = perf_counter() - iteration_start
+            trial_rows = []
+            fixed_sum = np.zeros_like(true_A, dtype=float)
+            jump_sum = np.zeros_like(true_A, dtype=float)
+            for trial in range(num_trials):
+                print(f"n={n}: trial {trial + 1}/{num_trials}", flush=True)
+                iteration_start = perf_counter()
+                start = perf_counter()
+                fixed_data = observations.simulate_fixed_observations(n)
+                fixed_simulation = perf_counter() - start
+                start = perf_counter()
+                jump_times, jump_states = observations.simulate_individual_jump_times_observations(
+                    n, batch_size=batch_size,
+                )
+                jump_simulation = perf_counter() - start
+                start = perf_counter()
+                fixed_A = fixed_emb.optimise_A(fixed_times, fixed_data)
+                fixed_fit = perf_counter() - start
+                start = perf_counter()
+                jump_A = jump_emb.optimise_A(jump_times, jump_states)
+                jump_fit = perf_counter() - start
+                fixed_sum += fixed_A
+                jump_sum += jump_A
+                row = dict(zip(FIELDS[:7], (
+                    int(n), np.mean((true_A - fixed_A)**2), np.mean((true_A - jump_A)**2),
+                    fixed_fit, jump_fit, fixed_simulation, jump_simulation,
+                )))
+                # Free the old panel before allocating the next, larger one.
+                del fixed_data, jump_times, jump_states
+                row["iteration_seconds"] = perf_counter() - iteration_start
+                trial_rows.append(row)
+            fixed_paths.append(fixed_sum / num_trials)
+            jump_paths.append(jump_sum / num_trials)
+            row = {key: float(np.mean([trial[key] for trial in trial_rows]))
+                   for key in FIELDS[1:-1]}
+            row.update(num_individuals=int(n), num_trials=int(num_trials))
             rows.append(row)
             writer.writerow(row)
             output.flush()
             print(
-                f"n={n}: fixed-simulation={fixed_simulation:.3f}s, "
-                f"jump-simulation={jump_simulation:.3f}s, "
-                f"fixed-fit={fixed_fit:.3f}s, jump-fit={jump_fit:.3f}s, "
-                f"total={row['iteration_seconds']:.3f}s", flush=True,
+                f"n={n}: mean fixed-MISE={row['fixed_mise']:.6g}, "
+                f"jump-MISE={row['jump_mise']:.6g}, "
+                f"fixed-fit={row['fixed_execution_seconds']:.3f}s, "
+                f"jump-fit={row['jump_execution_seconds']:.3f}s, "
+                f"total/trial={row['iteration_seconds']:.3f}s", flush=True,
             )
+
     return (true_A, fixed_paths, jump_paths,
             *(np.asarray([row[key] for row in rows]) for key in FIELDS[1:5]))
 
 
 def generate_data(
     results_file=DEFAULT_RESULTS_FILE, target_jumps=8, rank=2,
-    num_intervals=1000, num_individuals_list=None, max_iter=1000,
-    seed=None, batch_size=10000,
+    num_intervals=1000, num_individuals_list=None, max_iter=500,
+    seed=None, batch_size=10000, num_trials=5,
 ):
     if rank != 2:
         raise ValueError("trig_generator is rank 2; use run_experiments for other generators")
@@ -200,7 +220,7 @@ def generate_data(
     return run_experiments(
         observations.generator, rank, np.linspace(0, 1, target_jumps),
         num_intervals, num_individuals_list, results_file=results_file,
-        max_iter=max_iter, seed=seed, batch_size=batch_size,
+        max_iter=max_iter, seed=seed, batch_size=batch_size, mu=1, num_trials=num_trials,
     )
 
 
@@ -210,18 +230,22 @@ def plot_results_from_file(results_file=DEFAULT_RESULTS_FILE, figure_file=None, 
     n = data["num_individuals"]
     for name, color in (("fixed", "tab:blue"), ("jump", "tab:orange")):
         mise_ax.loglog(n, data[f"{name}_mise"], "o-", color=color, label=name)
-        time_ax.plot(n, data[f"{name}_execution_seconds"], "o-", color=color,
-                     label=f"{name} fit")
+        time_ax.loglog(n, data[f"{name}_execution_seconds"], "o-", color=color,
+                     label=f"{name}")
         # time_ax.plot(n, data[f"{name}_simulation_seconds"], "o--", color=color,
         #              label=f"{name} simulation")
     # time_ax.plot(n, data["iteration_seconds"], "o-", color="black", label="iteration total")
     mise_ax.set(ylabel="Mean integrated square error", title="MISE vs. Number of Individuals")
-    time_ax.set_xscale('log')
-    time_ax.set(ylabel="Elapsed time (seconds)", title="Simulation, Fitting and Total Time")
+    time_ax.set(ylabel="Elapsed time (seconds)", title="Simulation vs . Number of Individuals")
     for ax in (mise_ax, time_ax):
-        ax.set_xlabel("Number of individuals sampled")
+        ax.set_xlabel("Number of individuals sampled", fontsize=LABEL_FONT_SIZE)
+        ax.tick_params(axis="both", labelsize=TICK_LABEL_FONT_SIZE)
         ax.grid(True, which="both", alpha=.3)
-        ax.legend()
+        ax.legend(fontsize=LEGEND_FONT_SIZE)
+    mise_ax.set_ylabel("Mean integrated square error", fontsize=LABEL_FONT_SIZE)
+    mise_ax.set_title("MISE vs. Number of Individuals", fontsize=TITLE_FONT_SIZE)
+    time_ax.set_ylabel("Elapsed time (seconds)", fontsize=LABEL_FONT_SIZE)
+    time_ax.set_title("Simulation vs . Number of Individuals", fontsize=TITLE_FONT_SIZE)
     fig.tight_layout()
     if figure_file is not None:
         figure_file = Path(figure_file)
@@ -243,12 +267,14 @@ def main():
     parser.add_argument("--num-intervals", type=int, default=1000)
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=10000)
+    parser.add_argument("--num-trials", type=int, default=5,
+                        help="Independent trials per sample size (default: 5)")
     parser.add_argument("--seed", type=int)
     args = parser.parse_args()
     if not args.plot_only:
         generate_data(args.results_file, num_individuals_list=args.individuals,
                       num_intervals=args.num_intervals, max_iter=args.max_iter,
-                      seed=args.seed, batch_size=args.batch_size)
+                      seed=args.seed, batch_size=args.batch_size, num_trials=args.num_trials)
     plot_results_from_file(args.results_file, args.figure_file, show=not args.no_show)
 
 

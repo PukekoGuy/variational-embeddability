@@ -11,6 +11,7 @@ import numpy as np
 from scipy.stats import linregress
 
 from experiment import Observation, trig_generator, plot_2D_generator_path
+from cosmetics import LABEL_FONT_SIZE, LEGEND_FONT_SIZE, TICK_LABEL_FONT_SIZE, TITLE_FONT_SIZE
 from individual_data_adjoint import Embedder as Fixed_Embedder
 from individual_jumps_gradient import Embedder as Jump_Embedder
 
@@ -225,11 +226,12 @@ def plot_results_from_file(results_file=DEFAULT_RESULTS_FILE, figure_file=None, 
         color="tab:orange",
         label="jump-time",
     )
-    mise_ax.set_xlabel("Number of individuals sampled")
-    mise_ax.set_ylabel("Mean integrated square error")
-    mise_ax.set_title(mise_title)
+    mise_ax.set_xlabel("Number of individuals sampled", fontsize=LABEL_FONT_SIZE)
+    mise_ax.set_ylabel("Mean integrated square error", fontsize=LABEL_FONT_SIZE)
+    mise_ax.set_title(mise_title, fontsize=TITLE_FONT_SIZE)
     mise_ax.grid(True, which="both", alpha=0.3)
-    mise_ax.legend()
+    mise_ax.legend(fontsize=LEGEND_FONT_SIZE)
+    mise_ax.tick_params(axis="both", labelsize=TICK_LABEL_FONT_SIZE)
 
     time_ax.plot(
         num_individuals,
@@ -245,11 +247,12 @@ def plot_results_from_file(results_file=DEFAULT_RESULTS_FILE, figure_file=None, 
         color="tab:orange",
         label="jump-time",
     )
-    time_ax.set_xlabel("Number of individuals sampled")
-    time_ax.set_ylabel("Execution time (seconds)")
-    time_ax.set_title("Execution Time vs. Number of Individuals")
+    time_ax.set_xlabel("Number of individuals sampled", fontsize=LABEL_FONT_SIZE)
+    time_ax.set_ylabel("Execution time (seconds)", fontsize=LABEL_FONT_SIZE)
+    time_ax.set_title("Execution Time vs. Number of Individuals", fontsize=TITLE_FONT_SIZE)
     time_ax.grid(True, alpha=0.3)
-    time_ax.legend()
+    time_ax.legend(fontsize=LEGEND_FONT_SIZE)
+    time_ax.tick_params(axis="both", labelsize=TICK_LABEL_FONT_SIZE)
 
     fig.tight_layout()
 

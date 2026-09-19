@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import fsolve
 
+from cosmetics import LABEL_FONT_SIZE, LEGEND_FONT_SIZE, TICK_LABEL_FONT_SIZE, TITLE_FONT_SIZE
+
 class Observation:
     def __init__(self, generator, rank, times=None, num_intervals=100):
         self.generator = generator
@@ -117,9 +119,10 @@ def plot_MISE(x_range, MISE):
 
     fig, ax = plt.subplots()
     ax.loglog(x_range, MISE)
-    ax.set_ylabel("Mean integrated square error")
-    ax.set_xlabel("Number of individuals sampled")
-    ax.set_title(f'Slope = {slope}')
+    ax.set_ylabel("Mean integrated square error", fontsize=LABEL_FONT_SIZE)
+    ax.set_xlabel("Number of individuals sampled", fontsize=LABEL_FONT_SIZE)
+    ax.set_title(f'Slope = {slope}', fontsize=TITLE_FONT_SIZE)
+    ax.tick_params(axis="both", labelsize=TICK_LABEL_FONT_SIZE)
     ax.grid(True)
     fig.tight_layout()
     plt.show()

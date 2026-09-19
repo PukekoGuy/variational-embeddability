@@ -3,6 +3,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+from cosmetics import PLOT_FONT_SIZE
 from experiment import plot_2D_generator_path, trig_generator
 from individual_data_adjoint import run_experiments as run_fixed_experiments
 from individual_jumps_gradient import run_experiments as run_jump_experiments
@@ -18,7 +19,7 @@ def plot_comparison(
     kappa=1.0,
     max_iter=500,
     plot_frequency=1,
-    fontsize=14,
+    fontsize=PLOT_FONT_SIZE,
     figsize=(16, 12),
     show=True,
 ):

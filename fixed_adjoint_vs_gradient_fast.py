@@ -18,25 +18,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import linregress
 
+from cosmetics import LABEL_FONT_SIZE, LEGEND_FONT_SIZE, TICK_LABEL_FONT_SIZE, TITLE_FONT_SIZE
 from experiment import Observation, trig_generator
 from fixed_vs_jump_time_fast import BatchedObservation
 from individual_data_adjoint import Embedder as adjoint_Embedder
 from individual_data_gradient import Embedder as gradient_Embedder
 
-DEFAULT_RESULTS_FILE = Path(__file__).with_name("fixed_adjoint_vs_gradient_fast_results.csv")
+DEFAULT_RESULTS_FILE = Path(__file__).parent / "results" / "fixed_adjoint_vs_gradient_fast_results.csv"
 FIELDS = (
     "num_individuals", "adjoint_mise", "gradient_mise",
     "adjoint_execution_seconds", "gradient_execution_seconds",
-    "simulation_seconds", "iteration_seconds",
+    "simulation_seconds", "iteration_seconds", "num_trials",
 )
 
 
 def run_experiments(
     generator, rank, fixed_times, num_intervals, num_individuals_range,
-    results_file=DEFAULT_RESULTS_FILE, mu=1e-2, kappa=1.0, max_iter=500,
-    seed=None,
+    results_file=DEFAULT_RESULTS_FILE, mu=1e-4, kappa=1.0, max_iter=500,
+    seed=None, num_trials=5,
 ):
-    """Simulate once per panel size, fit both embedders and save each row.
+    """Fit num_trials independent panels per size and save mean metrics.
+
+    Both methods fit the same panel within each trial. MISE is averaged over
+    trial errors, not computed from the mean estimate. Returned path lists
+    contain one mean estimated path per size. All CSV timing columns are
+    per-trial means; num_trials records the count.
 
     Execution columns time only optimise_A, including its data preparation.
     Iteration time includes shared simulation, both fits, MISE and panel cleanup;
@@ -46,6 +52,9 @@ def run_experiments(
     gradient_estimated_paths, adjoint_mise, gradient_mise,
     adjoint_execution_time, gradient_execution_time).
     """
+    if (isinstance(num_trials, (bool, np.bool_))
+            or not isinstance(num_trials, (int, np.integer)) or num_trials < 1):
+        raise ValueError("num_trials must be a positive integer")
     sizes = np.asarray(list(num_individuals_range), dtype=int)
     if sizes.ndim != 1 or sizes.size == 0 or np.any(sizes < 1):
         raise ValueError("num_individuals_range must contain positive panel sizes")
@@ -64,38 +73,50 @@ def run_experiments(
         writer = csv.DictWriter(output, fieldnames=FIELDS)
         writer.writeheader()
         for n in sizes:
-            print(f"n={n}: simulating and fitting...", flush=True)
-            iteration_start = perf_counter()
-            start = perf_counter()
-            observed_paths = observations.simulate_fixed_observations(n)
-            simulation = perf_counter() - start
+            trial_rows = []
+            adjoint_sum = np.zeros_like(true_A, dtype=float)
+            gradient_sum = np.zeros_like(true_A, dtype=float)
+            for trial in range(num_trials):
+                print(f"n={n}: trial {trial + 1}/{num_trials}", flush=True)
+                iteration_start = perf_counter()
+                start = perf_counter()
+                observed_paths = observations.simulate_fixed_observations(n)
+                simulation = perf_counter() - start
 
-            start = perf_counter()
-            adjoint_A = adjoint_emb.optimise_A(fixed_times, observed_paths)
-            adjoint_fit = perf_counter() - start
-            start = perf_counter()
-            gradient_A = gradient_emb.optimise_A(fixed_times, observed_paths)
-            gradient_fit = perf_counter() - start
+                start = perf_counter()
+                adjoint_A = adjoint_emb.optimise_A(fixed_times, observed_paths)
+                adjoint_fit = perf_counter() - start
+                start = perf_counter()
+                gradient_A = gradient_emb.optimise_A(fixed_times, observed_paths)
+                gradient_fit = perf_counter() - start
 
-            adjoint_paths.append(adjoint_A)
-            gradient_paths.append(gradient_A)
-            row = {
-                "num_individuals": int(n),
-                "adjoint_mise": np.mean((true_A - adjoint_A)**2),
-                "gradient_mise": np.mean((true_A - gradient_A)**2),
-                "adjoint_execution_seconds": adjoint_fit,
-                "gradient_execution_seconds": gradient_fit,
-                "simulation_seconds": simulation,
-            }
-            del observed_paths
-            row["iteration_seconds"] = perf_counter() - iteration_start
+                adjoint_sum += adjoint_A
+                gradient_sum += gradient_A
+                row = {
+                    "adjoint_mise": np.mean((true_A - adjoint_A)**2),
+                    "gradient_mise": np.mean((true_A - gradient_A)**2),
+                    "adjoint_execution_seconds": adjoint_fit,
+                    "gradient_execution_seconds": gradient_fit,
+                    "simulation_seconds": simulation,
+                }
+                del observed_paths
+                row["iteration_seconds"] = perf_counter() - iteration_start
+                trial_rows.append(row)
+            adjoint_paths.append(adjoint_sum / num_trials)
+            gradient_paths.append(gradient_sum / num_trials)
+            row = {key: float(np.mean([trial[key] for trial in trial_rows]))
+                   for key in FIELDS[1:-1]}
+            row.update(num_individuals=int(n), num_trials=int(num_trials))
             rows.append(row)
             writer.writerow(row)
             output.flush()
             print(
-                f"n={n}: simulation={simulation:.3f}s, "
-                f"adjoint-fit={adjoint_fit:.3f}s, gradient-fit={gradient_fit:.3f}s, "
-                f"total={row['iteration_seconds']:.3f}s", flush=True,
+                f"n={n}: mean adjoint-MISE={row['adjoint_mise']:.6g}, "
+                f"gradient-MISE={row['gradient_mise']:.6g}, "
+                f"simulation={row['simulation_seconds']:.3f}s, "
+                f"adjoint-fit={row['adjoint_execution_seconds']:.3f}s, "
+                f"gradient-fit={row['gradient_execution_seconds']:.3f}s, "
+                f"total/trial={row['iteration_seconds']:.3f}s", flush=True,
             )
 
     return (true_A, adjoint_paths, gradient_paths,
@@ -104,20 +125,22 @@ def run_experiments(
 
 def generate_data(
     results_file=DEFAULT_RESULTS_FILE, target_jumps=1, num_observations=20,
-    rank=2, num_intervals=100, num_individuals_range=range(500, 10001, 500),
-    max_iter=500, seed=None,
+    rank=2, num_intervals=1000, num_individuals_list=None,
+    max_iter=500, seed=None, num_trials=5,
 ):
     """Retain the original experiment defaults, using batched simulation."""
     if rank != 2:
         raise ValueError("trig_generator is rank 2; use run_experiments for other generators")
+    if num_individuals_list is None:
+        num_individuals_list = np.rint(np.geomspace(1, 1e6, 12)).astype(int)
     start = perf_counter()
     observations = Observation(trig_generator(), rank)
     observations.tune_generator_for_target_jumps(lambda A: trig_generator(A=A), target_jumps)
     print(f"Generator tuning: {perf_counter() - start:.3f}s", flush=True)
     return run_experiments(
         observations.generator, rank, np.linspace(0.0, 1.0, num_observations),
-        num_intervals, num_individuals_range, results_file=results_file,
-        max_iter=max_iter, seed=seed,
+        num_intervals, num_individuals_list, results_file=results_file,
+        max_iter=max_iter, seed=seed, num_trials=num_trials,
     )
 
 
@@ -129,21 +152,26 @@ def plot_results_from_file(results_file=DEFAULT_RESULTS_FILE, figure_file=None, 
     for name, color in (("adjoint", "tab:blue"), ("gradient", "tab:orange")):
         mise = data[f"{name}_mise"]
         mise_ax.loglog(n, mise, "o-", color=color, label=name)
-        time_ax.plot(n, data[f"{name}_execution_seconds"], "o-", color=color,
-                     label=f"{name} fit")
+        time_ax.loglog(n, data[f"{name}_execution_seconds"], "o-", color=color,
+                     label=f"{name}")
         # Preserve slope reporting; a single sample size has no defined slope.
         if len(np.unique(n)) > 1 and np.all(n > 0) and np.all(np.isfinite(mise) & (mise > 0)):
             slope = linregress(np.log(n), np.log(mise)).slope
             print(f"{name} MISE slope = {slope:.3f}")
-    time_ax.plot(n, data["simulation_seconds"], "o--", color="tab:green",
-                 label="shared simulation")
-    time_ax.plot(n, data["iteration_seconds"], "o-", color="black", label="iteration total")
+    # time_ax.plot(n, data["simulation_seconds"], "o--", color="tab:green",
+                #  label="shared simulation")
+    # time_ax.plot(n, data["iteration_seconds"], "o-", color="black", label="iteration total")
     mise_ax.set(ylabel="Mean integrated square error", title="MISE vs. Number of Individuals")
-    time_ax.set(ylabel="Elapsed time (seconds)", title="Simulation, Fitting and Total Time")
+    time_ax.set(ylabel="Elapsed time (seconds)", title="Simulation vs . Number of Individuals")
     for ax in (mise_ax, time_ax):
-        ax.set_xlabel("Number of individuals sampled")
+        ax.set_xlabel("Number of individuals sampled", fontsize=LABEL_FONT_SIZE)
+        ax.tick_params(axis="both", labelsize=TICK_LABEL_FONT_SIZE)
         ax.grid(True, which="both", alpha=.3)
-        ax.legend()
+        ax.legend(fontsize=LEGEND_FONT_SIZE)
+    mise_ax.set_ylabel("Mean integrated square error", fontsize=LABEL_FONT_SIZE)
+    mise_ax.set_title("MISE vs. Number of Individuals", fontsize=TITLE_FONT_SIZE)
+    time_ax.set_ylabel("Elapsed time (seconds)", fontsize=LABEL_FONT_SIZE)
+    time_ax.set_title("Simulation vs . Number of Individuals", fontsize=TITLE_FONT_SIZE)
     fig.tight_layout()
     if figure_file is not None:
         figure_file = Path(figure_file)
@@ -161,20 +189,21 @@ def main():
     parser.add_argument("--figure-file", type=Path)
     parser.add_argument("--no-show", action="store_true")
     parser.add_argument("--individuals", type=int, nargs="+",
-                        help="Panel sizes; default: 500 to 10,000 in steps of 500")
+                        help="Panel sizes; default: 12 geometrically spaced sizes from 1 to 1,000,000")
     parser.add_argument("--num-intervals", type=int, default=100)
     parser.add_argument("--num-observations", type=int, default=20)
     parser.add_argument("--target-jumps", type=float, default=1)
     parser.add_argument("--max-iter", type=int, default=500)
+    parser.add_argument("--num-trials", type=int, default=5,
+                        help="Independent trials per sample size (default: 5)")
     parser.add_argument("--seed", type=int)
     args = parser.parse_args()
     if not args.plot_only:
         generate_data(
             args.results_file, target_jumps=args.target_jumps,
             num_observations=args.num_observations, num_intervals=args.num_intervals,
-            num_individuals_range=(args.individuals if args.individuals is not None
-                                   else range(500, 10001, 500)),
-            max_iter=args.max_iter, seed=args.seed,
+            num_individuals_list=args.individuals, max_iter=args.max_iter, seed=args.seed,
+            num_trials=args.num_trials,
         )
     plot_results_from_file(args.results_file, args.figure_file, show=not args.no_show)
 
